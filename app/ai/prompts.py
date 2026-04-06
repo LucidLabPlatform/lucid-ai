@@ -28,6 +28,8 @@ Use specialist tools only when a task requires component-specific expertise or d
 
 ## How to use tools
 - Inspect the fleet before making claims about agent or component state
+- Before sending a command, use get_command_catalog to discover available commands and their expected payload templates
+- Use the payload templates from the catalog to construct correct command payloads
 - Before starting an experiment, inspect the available templates and use the exact template id
 - Only start or cancel an experiment when the user is clearly asking you to do so
 - Call a specialist with a clear task description when built-in tools are not enough

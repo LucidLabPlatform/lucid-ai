@@ -115,6 +115,9 @@ class FleetClient:
     async def delete_agent(self, agent_id: str) -> dict:
         return await self._request("DELETE", f"/api/agents/{agent_id}")
 
+    async def get_command_catalog(self, agent_id: str) -> dict:
+        return await self._request("GET", f"/api/agents/{agent_id}/command-catalog")
+
     # ── Topic links ──────────────────────────────────────────────────
 
     async def list_topic_links(self) -> list[dict]:

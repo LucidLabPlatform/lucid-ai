@@ -246,6 +246,16 @@ class AIWorkflowAgent:
             )
 
         @tool
+        async def get_command_catalog(agent_id: str) -> str:
+            """Get the full catalog of available commands for an agent and its components.
+
+            Returns all agent-level commands and per-component commands with their
+            action names, expected payload templates, and categories. Use this to
+            discover what commands you can send before calling send_agent_command
+            or send_component_command."""
+            return self._json_output(await self._fleet.get_command_catalog(agent_id))
+
+        @tool
         async def delete_agent(agent_id: str) -> str:
             """Remove an agent from the database. Use with caution."""
             return self._json_output(await self._fleet.delete_agent(agent_id))
@@ -301,6 +311,7 @@ class AIWorkflowAgent:
             get_agent_commands,
             send_agent_command,
             send_component_command,
+            get_command_catalog,
             delete_agent,
             list_experiment_templates,
             list_experiment_runs,
