@@ -85,3 +85,71 @@ class FleetClient:
 
     async def approve_experiment(self, run_id: str) -> dict:
         return await self._request("POST", f"/api/experiments/runs/{run_id}/approve")
+
+    # ── Agent logs & commands ────────────────────────────────────────
+
+    async def get_agent_logs(self, agent_id: str, limit: int = 50) -> list[dict]:
+        return await self._request("GET", f"/api/agents/{agent_id}/logs?limit={limit}")
+
+    async def get_agent_commands(self, agent_id: str, limit: int = 50) -> list[dict]:
+        return await self._request("GET", f"/api/agents/{agent_id}/commands?limit={limit}")
+
+    # ── Direct commands ──────────────────────────────────────────────
+
+    async def send_agent_command(self, agent_id: str, action: str, payload: dict | None = None) -> dict:
+        return await self._request(
+            "POST",
+            f"/api/agents/{agent_id}/cmd/{action}",
+            json_body=payload or {},
+        )
+
+    async def send_component_command(
+        self, agent_id: str, component_id: str, action: str, payload: dict | None = None
+    ) -> dict:
+        return await self._request(
+            "POST",
+            f"/api/agents/{agent_id}/components/{component_id}/cmd/{action}",
+            json_body=payload or {},
+        )
+
+    async def delete_agent(self, agent_id: str) -> dict:
+        return await self._request("DELETE", f"/api/agents/{agent_id}")
+
+    # ── Topic links ──────────────────────────────────────────────────
+
+    async def list_topic_links(self) -> list[dict]:
+        return await self._request("GET", "/api/topic-links")
+
+    async def get_topic_link(self, link_id: str) -> dict:
+        return await self._request("GET", f"/api/topic-links/{link_id}")
+
+    async def create_topic_link(
+        self, name: str, source_topic: str, target_topic: str,
+        select_clause: str = "*", payload_template: str | None = None, qos: int = 0,
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/api/topic-links",
+            json_body={
+                "name": name,
+                "source_topic": source_topic,
+                "target_topic": target_topic,
+                "select_clause": select_clause,
+                "payload_template": payload_template,
+                "qos": qos,
+            },
+        )
+
+    async def activate_topic_link(self, link_id: str) -> dict:
+        return await self._request("PUT", f"/api/topic-links/{link_id}/activate")
+
+    async def deactivate_topic_link(self, link_id: str) -> dict:
+        return await self._request("PUT", f"/api/topic-links/{link_id}/deactivate")
+
+    async def delete_topic_link(self, link_id: str) -> dict:
+        return await self._request("DELETE", f"/api/topic-links/{link_id}")
+
+    # ── Sync state ───────────────────────────────────────────────────
+
+    async def get_sync_state(self) -> dict:
+        return await self._request("GET", "/api/sync-state")

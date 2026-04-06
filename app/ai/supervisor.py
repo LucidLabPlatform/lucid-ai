@@ -217,15 +217,104 @@ class AIWorkflowAgent:
             result = await self._fleet.approve_experiment(run_id)
             return self._json_output(result)
 
+        # ── Agent logs & commands ────────────────────────────────────
+
+        @tool
+        async def get_agent_logs(agent_id: str, limit: int = 50) -> str:
+            """Get recent logs for an agent. Returns log entries with timestamps, levels, and messages."""
+            return self._json_output(await self._fleet.get_agent_logs(agent_id, limit))
+
+        @tool
+        async def get_agent_commands(agent_id: str, limit: int = 50) -> str:
+            """Get command history for an agent. Shows sent commands and their results."""
+            return self._json_output(await self._fleet.get_agent_commands(agent_id, limit))
+
+        # ── Direct commands ──────────────────────────────────────────
+
+        @tool
+        async def send_agent_command(agent_id: str, action: str, payload: str = "{}") -> str:
+            """Send a command directly to an agent. Action is the command name (e.g. ping, restart). Payload is a JSON string of additional parameters."""
+            return self._json_output(
+                await self._fleet.send_agent_command(agent_id, action, json.loads(payload))
+            )
+
+        @tool
+        async def send_component_command(agent_id: str, component_id: str, action: str, payload: str = "{}") -> str:
+            """Send a command to a specific component on an agent. Action is the command name. Payload is a JSON string."""
+            return self._json_output(
+                await self._fleet.send_component_command(agent_id, component_id, action, json.loads(payload))
+            )
+
+        @tool
+        async def delete_agent(agent_id: str) -> str:
+            """Remove an agent from the database. Use with caution."""
+            return self._json_output(await self._fleet.delete_agent(agent_id))
+
+        # ── Topic links ──────────────────────────────────────────────
+
+        @tool
+        async def list_topic_links() -> str:
+            """List all MQTT topic links (rules that forward messages between topics)."""
+            return self._json_output(await self._fleet.list_topic_links())
+
+        @tool
+        async def get_topic_link(link_id: str) -> str:
+            """Get details of a specific topic link by its id."""
+            return self._json_output(await self._fleet.get_topic_link(link_id))
+
+        @tool
+        async def create_topic_link(name: str, source_topic: str, target_topic: str, select_clause: str = "*", payload_template: str = "", qos: int = 0) -> str:
+            """Create a new MQTT topic link that forwards messages from source_topic to target_topic."""
+            return self._json_output(
+                await self._fleet.create_topic_link(
+                    name, source_topic, target_topic, select_clause,
+                    payload_template or None, qos,
+                )
+            )
+
+        @tool
+        async def activate_topic_link(link_id: str) -> str:
+            """Activate a topic link so it starts forwarding messages."""
+            return self._json_output(await self._fleet.activate_topic_link(link_id))
+
+        @tool
+        async def deactivate_topic_link(link_id: str) -> str:
+            """Deactivate a topic link to stop it from forwarding messages."""
+            return self._json_output(await self._fleet.deactivate_topic_link(link_id))
+
+        @tool
+        async def delete_topic_link(link_id: str) -> str:
+            """Delete a topic link permanently."""
+            return self._json_output(await self._fleet.delete_topic_link(link_id))
+
+        # ── Sync state ───────────────────────────────────────────────
+
+        @tool
+        async def get_sync_state() -> str:
+            """Get the current sync state of all managed domains (mqtt-users, topic-links, etc)."""
+            return self._json_output(await self._fleet.get_sync_state())
+
         return [
             list_agents,
             get_agent,
+            get_agent_logs,
+            get_agent_commands,
+            send_agent_command,
+            send_component_command,
+            delete_agent,
             list_experiment_templates,
             list_experiment_runs,
             get_experiment_run,
             start_experiment,
             cancel_experiment_run,
             approve_experiment_step,
+            list_topic_links,
+            get_topic_link,
+            create_topic_link,
+            activate_topic_link,
+            deactivate_topic_link,
+            delete_topic_link,
+            get_sync_state,
         ]
 
     def _build_specialist_tools(self, specialists: list[dict]) -> list:
