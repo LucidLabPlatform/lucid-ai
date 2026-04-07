@@ -97,19 +97,16 @@ class FleetClient:
     # ── Direct commands ──────────────────────────────────────────────
 
     async def send_agent_command(self, agent_id: str, action: str, payload: dict | None = None) -> dict:
-        return await self._request(
-            "POST",
-            f"/api/agents/{agent_id}/cmd/{action}",
-            json_body=payload or {},
+        return await self.send_command(
+            agent_id=agent_id, action=action, payload=payload, timeout_s=15.0,
         )
 
     async def send_component_command(
         self, agent_id: str, component_id: str, action: str, payload: dict | None = None
     ) -> dict:
-        return await self._request(
-            "POST",
-            f"/api/agents/{agent_id}/components/{component_id}/cmd/{action}",
-            json_body=payload or {},
+        return await self.send_command(
+            agent_id=agent_id, component_id=component_id,
+            action=action, payload=payload, timeout_s=15.0,
         )
 
     async def delete_agent(self, agent_id: str) -> dict:
