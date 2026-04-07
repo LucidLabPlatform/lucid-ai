@@ -664,6 +664,15 @@ def upsert_conversation(session_id: str) -> str:
     return result
 
 
+def delete_conversation(session_id: str) -> None:
+    """Delete a conversation and all its turns."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM conversation_turns WHERE conversation_id = %s", (session_id,))
+            cur.execute("DELETE FROM conversations WHERE id = %s", (session_id,))
+        conn.commit()
+
+
 def save_conversation_turns(
     session_id: str, user_msg: str, assistant_msg: str
 ) -> None:

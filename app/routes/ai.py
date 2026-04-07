@@ -65,6 +65,13 @@ async def ai_sessions():
     return DB.list_conversations()
 
 
+@router.delete("/api/ai/sessions/{session_id}")
+async def ai_delete_session(session_id: str):
+    """Delete a conversation session and all its turns."""
+    DB.delete_conversation(session_id)
+    return {"deleted": session_id}
+
+
 @router.get("/api/ai/history")
 async def ai_history(session_id: str, request: Request):
     """Return the conversation history for ``session_id``.
