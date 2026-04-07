@@ -611,6 +611,30 @@ def get_available_specialists() -> list[dict]:
     ]
 
 
+def list_conversations() -> list[dict]:
+    """Return all AI chat sessions, most recent first."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.id, c.started_at, c.last_active_at,
+                       (SELECT ct.content FROM conversation_turns ct
+                        WHERE ct.conversation_id = c.id AND ct.role = 'user'
+                        ORDER BY ct.ts ASC LIMIT 1) AS first_message
+                FROM conversations c
+                WHERE c.researcher_id = %s
+                ORDER BY c.last_active_at DESC
+            """, (_AI_RESEARCHER_ID,))
+            return [
+                {
+                    "session_id": r[0],
+                    "started_at": r[1].isoformat() if r[1] else None,
+                    "last_active_at": r[2].isoformat() if r[2] else None,
+                    "preview": (r[3] or "")[:80],
+                }
+                for r in cur.fetchall()
+            ]
+
+
 def get_conversation_turns(session_id: str) -> list[tuple[str, str]]:
     """Return conversation turns as list of (role, content) tuples, oldest first."""
     with connect() as conn:

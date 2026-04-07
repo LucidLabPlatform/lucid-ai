@@ -59,6 +59,12 @@ async def ai_chat(body: ChatRequest, request: Request):
         raise HTTPException(status_code=503, detail=f"AI agent error: {e}")
 
 
+@router.get("/api/ai/sessions")
+async def ai_sessions():
+    """Return all AI chat sessions with preview of first message."""
+    return DB.list_conversations()
+
+
 @router.get("/api/ai/history")
 async def ai_history(session_id: str, request: Request):
     """Return the conversation history for ``session_id``.
