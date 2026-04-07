@@ -252,17 +252,23 @@ class AIWorkflowAgent:
 
         @tool
         async def send_agent_command(agent_id: str, action: str, payload: str = "{}") -> str:
-            """Send a command to an agent. IMPORTANT: Call get_command_catalog first. The payload must be a JSON string, e.g. '{}' for no-body commands or '{"set": {"heartbeat_s": 60}}' for config commands."""
-            return self._json_output(
-                await self._fleet.send_agent_command(agent_id, action, self._coerce_payload(payload))
-            )
+            """Send a command to an agent. Call get_command_catalog first. Payload is a JSON string."""
+            result = await self._fleet.send_agent_command(agent_id, action, self._coerce_payload(payload))
+            ok = (result.get("result") or {}).get("ok")
+            if ok:
+                return f"SUCCESS: {action} sent to {agent_id}."
+            error = (result.get("result") or {}).get("error", "unknown error")
+            return f"FAILED: {action} on {agent_id}: {error}"
 
         @tool
         async def send_component_command(agent_id: str, component_id: str, action: str, payload: str = "{}") -> str:
-            """Send a command to a component. IMPORTANT: Call get_command_catalog first to get the exact action name and payload format. Payload is a JSON string, e.g. '{"color": {"r": 0, "g": 0, "b": 255}}' for set-color."""
-            return self._json_output(
-                await self._fleet.send_component_command(agent_id, component_id, action, self._coerce_payload(payload))
-            )
+            """Send a command to a component. Call get_command_catalog first for exact action names and payload format."""
+            result = await self._fleet.send_component_command(agent_id, component_id, action, self._coerce_payload(payload))
+            ok = (result.get("result") or {}).get("ok")
+            if ok:
+                return f"SUCCESS: {action} sent to {component_id} on {agent_id}."
+            error = (result.get("result") or {}).get("error", "unknown error")
+            return f"FAILED: {action} on {component_id}/{agent_id}: {error}"
 
         @tool
         async def get_command_catalog(agent_id: str) -> str:
