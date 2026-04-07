@@ -232,17 +232,19 @@ class AIWorkflowAgent:
         # ── Direct commands ──────────────────────────────────────────
 
         @tool
-        async def send_agent_command(agent_id: str, action: str, payload: str = "{}") -> str:
-            """Send a command directly to an agent. Action is the command name (e.g. ping, restart). Payload is a JSON string of additional parameters."""
+        async def send_agent_command(agent_id: str, action: str, payload: dict | None = None) -> str:
+            """Send a command directly to an agent. Action is the command name (e.g. ping, restart). Payload is a dictionary of additional parameters (e.g. {"mode": "graceful"})."""
+            payload = self._coerce_payload(payload)
             return self._json_output(
-                await self._fleet.send_agent_command(agent_id, action, json.loads(payload))
+                await self._fleet.send_agent_command(agent_id, action, payload)
             )
 
         @tool
-        async def send_component_command(agent_id: str, component_id: str, action: str, payload: str = "{}") -> str:
-            """Send a command to a specific component on an agent. Action is the command name. Payload is a JSON string."""
+        async def send_component_command(agent_id: str, component_id: str, action: str, payload: dict | None = None) -> str:
+            """Send a command to a specific component on an agent. Action is the command name. Payload is a dictionary of additional parameters (e.g. {"color": "red", "brightness": 100})."""
+            payload = self._coerce_payload(payload)
             return self._json_output(
-                await self._fleet.send_component_command(agent_id, component_id, action, json.loads(payload))
+                await self._fleet.send_component_command(agent_id, component_id, action, payload)
             )
 
         @tool
@@ -376,6 +378,29 @@ class AIWorkflowAgent:
 
             tools.append(call_specialist)
         return tools
+
+    @staticmethod
+    def _coerce_payload(payload: Any) -> dict:
+        """Normalise the payload argument into a dict.
+
+        The LLM may pass a dict (correct), a JSON string, an empty string,
+        None, or some other unexpected type.  This method handles all cases
+        so the downstream MQTT call always receives a dict.
+        """
+        if payload is None:
+            return {}
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, str):
+            cleaned = payload.strip()
+            if not cleaned:
+                return {}
+            try:
+                parsed = json.loads(cleaned)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
 
     @staticmethod
     def _json_output(value: Any) -> str:
