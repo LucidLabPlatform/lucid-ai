@@ -23,8 +23,11 @@ Key classes:
 """
 import asyncio
 import json
+import logging
 import os
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
@@ -122,6 +125,17 @@ class AIWorkflowAgent:
             )
         except asyncio.TimeoutError:
             raise
+        except Exception as e:
+            # LangGraph/Ollama may produce malformed tool calls — return a
+            # user-friendly error instead of crashing the whole request.
+            log.warning("Agent invocation failed: %s", e)
+            response = (
+                "I had trouble processing that request. "
+                "Could you try rephrasing? For example: "
+                "'Set the LED strip on led_truss to yellow.'"
+            )
+            DB.save_conversation_turns(session_id, message, response)
+            return {"response": response, "tool_calls": []}
 
         all_messages = result.get("messages", [])
         response = all_messages[-1].content if all_messages else "No response"
