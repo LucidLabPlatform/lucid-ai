@@ -233,7 +233,7 @@ class AIWorkflowAgent:
 
         @tool
         async def send_agent_command(agent_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command directly to an agent. Action is the command name (e.g. ping, restart). Payload is a dictionary of additional parameters (e.g. {"mode": "graceful"})."""
+            """Send a command to an agent. IMPORTANT: You MUST call get_command_catalog first to get the exact action name and payload template. Use the action and payload structure exactly as returned by the catalog. Do NOT guess action names or payload formats."""
             payload = self._coerce_payload(payload)
             return self._json_output(
                 await self._fleet.send_agent_command(agent_id, action, payload)
@@ -241,7 +241,7 @@ class AIWorkflowAgent:
 
         @tool
         async def send_component_command(agent_id: str, component_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command to a specific component on an agent. Action is the command name. Payload is a dictionary of additional parameters (e.g. {"color": "red", "brightness": 100})."""
+            """Send a command to a component. IMPORTANT: You MUST call get_command_catalog first to get the exact action name (e.g. 'set-color' not 'set_color') and payload template (e.g. {"color": {"r": 0, "g": 0, "b": 255}}). Use the action and payload structure exactly as returned by the catalog."""
             payload = self._coerce_payload(payload)
             return self._json_output(
                 await self._fleet.send_component_command(agent_id, component_id, action, payload)
