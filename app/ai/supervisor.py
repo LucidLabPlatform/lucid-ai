@@ -237,19 +237,17 @@ class AIWorkflowAgent:
         # ── Direct commands ──────────────────────────────────────────
 
         @tool
-        async def send_agent_command(agent_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command to an agent. IMPORTANT: You MUST call get_command_catalog first to get the exact action name and payload template. Use the action and payload structure exactly as returned by the catalog. Do NOT guess action names or payload formats."""
-            payload = self._coerce_payload(payload)
+        async def send_agent_command(agent_id: str, action: str, payload: str = "{}") -> str:
+            """Send a command to an agent. IMPORTANT: Call get_command_catalog first. The payload must be a JSON string, e.g. '{}' for no-body commands or '{"set": {"heartbeat_s": 60}}' for config commands."""
             return self._json_output(
-                await self._fleet.send_agent_command(agent_id, action, payload)
+                await self._fleet.send_agent_command(agent_id, action, self._coerce_payload(payload))
             )
 
         @tool
-        async def send_component_command(agent_id: str, component_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command to a component. IMPORTANT: You MUST call get_command_catalog first to get the exact action name (e.g. 'set-color' not 'set_color') and payload template (e.g. {"color": {"r": 0, "g": 0, "b": 255}}). Use the action and payload structure exactly as returned by the catalog."""
-            payload = self._coerce_payload(payload)
+        async def send_component_command(agent_id: str, component_id: str, action: str, payload: str = "{}") -> str:
+            """Send a command to a component. IMPORTANT: Call get_command_catalog first to get the exact action name and payload format. Payload is a JSON string, e.g. '{"color": {"r": 0, "g": 0, "b": 255}}' for set-color."""
             return self._json_output(
-                await self._fleet.send_component_command(agent_id, component_id, action, payload)
+                await self._fleet.send_component_command(agent_id, component_id, action, self._coerce_payload(payload))
             )
 
         @tool
