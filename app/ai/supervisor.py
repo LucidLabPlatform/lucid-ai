@@ -84,10 +84,15 @@ class AIWorkflowAgent:
         history = DB.get_conversation_turns(session_id)
         specialists = DB.get_available_specialists()
         tools = self._build_core_tools() + self._build_specialist_tools(specialists)
+
+        # Inject live fleet state so the LLM never has to guess agent/component IDs
+        fleet_summary = await self._build_fleet_summary()
+
         system_prompt = SUPERVISOR_SYSTEM_PROMPT.format(
             specialist_list="\n".join(
                 f"- {s['component_id']}: {s['description']}" for s in specialists
-            ) or "No specialist components currently online."
+            ) or "No specialist components currently online.",
+            fleet_summary=fleet_summary,
         )
 
         # A new agent is created per call so the MemorySaver checkpoint reflects
@@ -378,6 +383,25 @@ class AIWorkflowAgent:
 
             tools.append(call_specialist)
         return tools
+
+    async def _build_fleet_summary(self) -> str:
+        """Build a short summary of all agents and their components for the system prompt."""
+        try:
+            agents = await self._fleet.list_agents()
+        except Exception:
+            return "Fleet unavailable."
+
+        if not agents:
+            return "No agents registered."
+
+        lines = []
+        for agent in agents:
+            aid = agent["agent_id"]
+            status = (agent.get("status") or {}).get("state", "unknown")
+            comp_ids = sorted((agent.get("components") or {}).keys())
+            comp_str = ", ".join(comp_ids) if comp_ids else "none"
+            lines.append(f"- {aid} ({status}) — components: {comp_str}")
+        return "\n".join(lines)
 
     @staticmethod
     def _coerce_payload(payload: Any) -> dict:
