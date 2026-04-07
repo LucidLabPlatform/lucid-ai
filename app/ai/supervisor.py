@@ -22,6 +22,7 @@ Key classes:
     AIWorkflowAgent — instantiated once at startup; stateless between calls.
 """
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -37,6 +38,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app import db as DB
 from app.ai.prompts import SUPERVISOR_SYSTEM_PROMPT
+
 
 
 class AIWorkflowAgent:
@@ -223,7 +225,7 @@ class AIWorkflowAgent:
         @tool
         async def start_experiment(template_id: str, params: dict[str, Any] | None = None) -> str:
             """Start an experiment run from an exact template_id and optional params object."""
-            result = await self._fleet.start_experiment(template_id, params=params or {})
+            result = await self._fleet.start_experiment(template_id, params=self._coerce_payload(params))
             return self._json_output(result)
 
         @tool
@@ -327,7 +329,7 @@ class AIWorkflowAgent:
             """Get the current sync state of all managed domains (mqtt-users, topic-links, etc)."""
             return self._json_output(await self._fleet.get_sync_state())
 
-        return [
+        all_tools = [
             list_agents,
             get_agent,
             get_agent_logs,
@@ -350,6 +352,23 @@ class AIWorkflowAgent:
             delete_topic_link,
             get_sync_state,
         ]
+
+        # Wrap each tool's coroutine so HTTP/network errors return strings
+        # instead of crashing the ReAct loop
+        for t in all_tools:
+            original = t.coroutine
+
+            @functools.wraps(original)
+            async def safe_coro(*args, _orig=original, **kwargs):
+                try:
+                    return await _orig(*args, **kwargs)
+                except Exception as e:
+                    log.warning("Tool %s failed: %s", _orig.__name__, e)
+                    return f"Error: {e}"
+
+            t.coroutine = safe_coro
+
+        return all_tools
 
     def _build_specialist_tools(self, specialists: list[dict]) -> list:
         """Dynamically create one LangChain tool per online specialist component.

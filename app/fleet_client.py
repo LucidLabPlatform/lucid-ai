@@ -27,7 +27,19 @@ class FleetClient:
             json=json_body,
             timeout=timeout_s + 5.0,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # Return error details instead of raising — lets the LLM reason
+            detail = ""
+            try:
+                body = response.json()
+                detail = body.get("detail", str(body))
+            except Exception:
+                detail = response.text[:200]
+            raise httpx.HTTPStatusError(
+                f"{response.status_code}: {detail}",
+                request=response.request,
+                response=response,
+            )
         if not response.content:
             return {}
         return response.json()
