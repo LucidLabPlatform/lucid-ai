@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -139,6 +140,9 @@ class AIWorkflowAgent:
 
         all_messages = result.get("messages", [])
         response = all_messages[-1].content if all_messages else "No response"
+
+        # Strip Qwen3 <think> blocks that may leak into the final response
+        response = re.sub(r"<think>[\s\S]*?</think>\s*", "", response).strip()
 
         # Extract tool calls made during the ReAct loop for the UI to display
         tool_calls = []
