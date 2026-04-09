@@ -76,6 +76,9 @@ class FleetClient:
     async def list_experiment_templates(self) -> list[dict]:
         return await self._request("GET", "/api/experiments/templates")
 
+    async def get_experiment_template(self, template_id: str) -> dict:
+        return await self._request("GET", f"/api/experiments/templates/{template_id}")
+
     async def list_experiment_runs(self, status: str | None = None) -> list[dict]:
         path = "/api/experiments/runs"
         if status:

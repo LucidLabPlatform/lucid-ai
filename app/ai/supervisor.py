@@ -186,7 +186,8 @@ class AIWorkflowAgent:
 
         @tool
         async def list_experiment_templates() -> str:
-            """List available experiment templates with ids, names, versions, and tags."""
+            """List available experiment templates with ids, names, versions, and tags.
+            Call configure_experiment(id) next to get the parameter schema before starting."""
             templates = await self._fleet.list_experiment_templates()
             summary = [
                 {
@@ -218,13 +219,27 @@ class AIWorkflowAgent:
             return self._json_output(summary)
 
         @tool
+        async def configure_experiment(template_id: str) -> str:
+            """Get the parameter schema for a specific experiment template.
+            Call this after list_experiment_templates and before start_experiment
+            to know which parameters are required vs optional and their types."""
+            template = await self._fleet.get_experiment_template(template_id)
+            return self._json_output({
+                "id": template["id"],
+                "name": template["name"],
+                "parameters_schema": template.get("parameters_schema", {}),
+            })
+
+        @tool
         async def get_experiment_run(run_id: str) -> str:
             """Get one experiment run and its recorded steps by exact run_id."""
             return self._json_output(await self._fleet.get_experiment_run(run_id))
 
         @tool
         async def start_experiment(template_id: str, params: dict[str, Any] | None = None) -> str:
-            """Start an experiment run from an exact template_id and optional params object."""
+            """Start an experiment run. ALWAYS call configure_experiment(template_id) first
+            to discover required parameters — never call this without knowing what params
+            are needed. Do NOT retry on failure; check configure_experiment output instead."""
             result = await self._fleet.start_experiment(template_id, params=self._coerce_payload(params))
             return self._json_output(result)
 
@@ -294,7 +309,9 @@ class AIWorkflowAgent:
 
         @tool
         async def get_topic_link(link_id: str) -> str:
-            """Get details of a specific topic link by its id."""
+            """Get details and EMQX rule metrics for a topic link — throughput, matched/failed
+            message counts, latency. Always call this after list_topic_links when the user
+            asks about link health, throughput, or message counts."""
             return self._json_output(await self._fleet.get_topic_link(link_id))
 
         @tool
@@ -339,6 +356,7 @@ class AIWorkflowAgent:
             get_command_catalog,
             delete_agent,
             list_experiment_templates,
+            configure_experiment,
             list_experiment_runs,
             get_experiment_run,
             start_experiment,
