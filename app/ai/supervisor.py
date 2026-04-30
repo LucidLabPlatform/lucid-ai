@@ -1,492 +1,196 @@
 """AI Workflow Supervisor Agent for LUCID Central Command.
 
-This module implements the LangGraph ReAct agent that powers the ``/ai`` chat
-interface.  The agent acts as a **supervisor** that:
+This module implements the multi-specialist agent system that powers the
+``/ai`` chat interface. The agent acts as a **supervisor** that:
 
 1. Loads the conversation history from Postgres for the given ``session_id``.
-2. Queries ``component_metadata`` for online components with
-   ``capabilities.type == "ai_specialist"``.
-3. Dynamically builds one LangChain ``@tool`` per specialist.  Each tool
-   publishes a ``cmd/task`` MQTT command to the specialist's component and
-   awaits the ``evt/task/result`` response via ``RequestResponseManager``.
-4. Runs the ReAct loop (Reason + Act) using Ollama as the LLM backend.
+2. Classifies the user's intent via a two-tier classifier (keywords + LLM).
+3. Routes to the appropriate specialist agent (fleet, command, experiment,
+   topic_link, logs, or conversation).
+4. Each specialist runs a focused ReAct loop with only its domain's tools.
 5. Persists the user+assistant exchange to Postgres.
 
 Environment variables:
-    OLLAMA_MODEL        Ollama model tag (default: ``"llama3.1:8b"``).
+    OLLAMA_MODEL        Ollama model tag (default: ``"qwen3:14b"``).
     OLLAMA_BASE_URL     Ollama HTTP base URL (default: ``"http://ollama:11434"``).
-    AI_MAX_ITERATIONS   Maximum ReAct loop iterations (default: ``15``).
-    AI_CHAT_TIMEOUT     Overall timeout in seconds (default: ``60.0``).
 
 Key classes:
-    AIWorkflowAgent — instantiated once at startup; stateless between calls.
+    AIWorkflowAgent — instantiated once at startup; graph compiled once.
 """
-import asyncio
-import functools
+
 import json
 import logging
 import os
 import re
-from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_ollama import ChatOllama
+
+from app import db as DB
+from app.ai.graph import build_graph
 
 log = logging.getLogger(__name__)
 
-from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
-
-from app import db as DB
-from app.ai.prompts import SUPERVISOR_SYSTEM_PROMPT
-
-
 
 class AIWorkflowAgent:
-    """LangGraph ReAct supervisor agent that routes tasks to LUCID specialists.
+    """Multi-specialist LangGraph agent for LUCID fleet management.
+
+    The LangGraph StateGraph is compiled once at ``__init__`` with all
+    specialist agents pre-built. Per-request, only fleet context and
+    conversation history are injected.
 
     Attributes:
-        _fleet:  HTTP client for `lucid-orchestrator` command dispatch.
+        _fleet:  HTTP client for ``lucid-orchestrator`` command dispatch.
         _llm:    Configured ``ChatOllama`` language model instance.
+        _graph:  Compiled LangGraph StateGraph.
     """
 
     def __init__(self, fleet):
-        """
-        Args:
-            fleet: HTTP client that publishes commands through ``lucid-orchestrator``.
-        """
         self._fleet = fleet
         self._llm = ChatOllama(
-            model=os.environ["OLLAMA_MODEL"],
+            model=os.environ.get("OLLAMA_MODEL", "qwen3:14b"),
             temperature=0,
             num_ctx=32768,
-            base_url=os.environ["OLLAMA_BASE_URL"],
+            base_url=os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434"),
         )
+        self._graph = build_graph(self._llm, self._fleet)
+        log.info("AI agent graph compiled with specialists: fleet, command, experiment, topic_link, logs, conversation")
 
-    async def chat(self, message: str, session_id: str) -> dict:
-        """Process one user message through the ReAct agent and return the response.
-
-        Steps:
-            1. Upsert conversation record in Postgres.
-            2. Load conversation history (provides the agent multi-turn context).
-            3. Discover available specialists from ``component_metadata``.
-            4. Build specialist tools and construct the ReAct agent.
-            5. Run ``agent.ainvoke`` with a configurable timeout.
-            6. Extract the final assistant message and any tool calls made.
-            7. Persist both turns to Postgres.
+    async def chat(self, message: str, session_id: str, is_voice: bool = False) -> dict:
+        """Process one user message through the multi-specialist graph.
 
         Args:
             message:    The user's plain-text message.
-            session_id: Identifies the conversation; can be any stable string.
+            session_id: Identifies the conversation.
+            is_voice:   True if the request came from the voice endpoint.
 
         Returns:
-            Dict with:
-                ``response``   — The assistant's final text reply.
-                ``tool_calls`` — List of ``{"specialist": str, "task": str}`` dicts.
-
-        Raises:
-            asyncio.TimeoutError: If the agent exceeds ``AI_CHAT_TIMEOUT`` seconds.
+            Dict with keys:
+                ``response``      — The assistant's final text reply.
+                ``tool_calls``    — List of tool call dicts.
+                ``intent``        — Classified intent category.
+                ``voice_summary`` — Short spoken version (only if is_voice).
         """
         DB.upsert_conversation(session_id)
         history = DB.get_conversation_turns(session_id)
-        specialists = DB.get_available_specialists()
-        tools = self._build_core_tools() + self._build_specialist_tools(specialists)
 
-        # Inject live fleet state so the LLM never has to guess agent/component IDs
-        fleet_summary = await self._build_fleet_summary()
-
-        system_prompt = SUPERVISOR_SYSTEM_PROMPT.format(
-            specialist_list="\n".join(
-                f"- {s['component_id']}: {s['description']}" for s in specialists
-            ) or "No specialist components currently online.",
-            fleet_summary=fleet_summary,
-        )
-
-        # A new agent is created per call so the MemorySaver checkpoint reflects
-        # the current conversation history injected via the ``messages`` list.
-        agent = create_react_agent(
-            model=self._llm,
-            tools=tools,
-            checkpointer=MemorySaver(),
-        )
-
-        # Build the message list: system prompt → history → current user message
-        messages = [("system", system_prompt)]
+        # Build message list from conversation history
+        messages = []
         for role, content in history:
-            messages.append((role, content))
-        messages.append(("user", message))
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
 
-        try:
-            result = await asyncio.wait_for(
-                agent.ainvoke(
-                    {"messages": messages},
-                    config={
-                        "configurable": {"thread_id": session_id},
-                        "recursion_limit": int(os.environ.get("AI_MAX_ITERATIONS", "15")),
-                    },
-                ),
-                timeout=float(os.environ.get("AI_CHAT_TIMEOUT", "60")),
-            )
-        except asyncio.TimeoutError:
-            raise
-        except Exception as e:
-            # LangGraph/Ollama may produce malformed tool calls — return a
-            # user-friendly error instead of crashing the whole request.
-            log.warning("Agent invocation failed: %s", e)
-            response = (
-                "I had trouble processing that request. "
-                "Could you try rephrasing? For example: "
-                "'Set the LED strip on led_truss to yellow.'"
-            )
-            DB.save_conversation_turns(session_id, message, response)
-            return {"response": response, "tool_calls": []}
+        # Add the current user message
+        messages.append(HumanMessage(content=message))
 
+        # Run the graph
+        input_state = {
+            "messages": messages,
+            "intent": "",
+            "fleet_context": "",
+            "session_id": session_id,
+            "tool_calls_made": [],
+            "is_voice": is_voice,
+            "voice_summary": "",
+        }
+
+        result = await self._graph.ainvoke(input_state)
+
+        # Extract final response
         all_messages = result.get("messages", [])
-        response = all_messages[-1].content if all_messages else "No response"
+        response = ""
+        for msg in reversed(all_messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                response = msg.content
+                break
 
-        # Strip Qwen3 <think> blocks that may leak into the final response
+        if not response:
+            response = "No response."
+
+        # Strip any remaining think blocks
         response = re.sub(r"<think>[\s\S]*?</think>\s*", "", response).strip()
 
-        # Extract tool calls made during the ReAct loop for the UI to display
-        tool_calls = []
-        for msg in all_messages:
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    tool_calls.append({
-                        "name": tc.get("name", ""),
-                        "args": self._stringify_tool_args(tc.get("args", {})),
-                    })
-
+        # Persist
         DB.save_conversation_turns(session_id, message, response)
-        return {"response": response, "tool_calls": tool_calls}
 
-    def _build_core_tools(self) -> list:
-        """Create first-party tools backed by lucid-orchestrator APIs.
+        result_dict = {
+            "response": response,
+            "tool_calls": result.get("tool_calls_made", []),
+            "intent": result.get("intent", ""),
+        }
 
-        These make the AI useful even when no specialist components are online.
+        if is_voice:
+            result_dict["voice_summary"] = result.get("voice_summary", response)
+
+        return result_dict
+
+    async def chat_stream(self, message: str, session_id: str):
+        """Stream the graph execution as events for SSE.
+
+        Yields dicts with ``type`` key:
+            - ``intent``      — classified intent
+            - ``tool_call``   — tool invocation started
+            - ``tool_result`` — tool completed
+            - ``token``       — streaming LLM token
+            - ``done``        — final response
         """
+        DB.upsert_conversation(session_id)
+        history = DB.get_conversation_turns(session_id)
 
-        @tool
-        async def list_agents() -> str:
-            """List known agents with their current status and component ids."""
-            agents = await self._fleet.list_agents()
-            summary = [
-                {
-                    "agent_id": agent["agent_id"],
-                    "status": (agent.get("status") or {}).get("state"),
-                    "component_ids": sorted((agent.get("components") or {}).keys()),
+        messages = []
+        for role, content in history:
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+        messages.append(HumanMessage(content=message))
+
+        input_state = {
+            "messages": messages,
+            "intent": "",
+            "fleet_context": "",
+            "session_id": session_id,
+            "tool_calls_made": [],
+            "is_voice": False,
+            "voice_summary": "",
+        }
+
+        full_response = ""
+        intent_sent = False
+
+        async for event in self._graph.astream_events(input_state, version="v2"):
+            kind = event.get("event", "")
+
+            # Emit intent after classification
+            if kind == "on_chain_end" and not intent_sent:
+                output = event.get("data", {}).get("output", {})
+                if isinstance(output, dict) and "intent" in output:
+                    yield {"type": "intent", "intent": output["intent"]}
+                    intent_sent = True
+
+            elif kind == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content") and chunk.content:
+                    full_response += chunk.content
+                    yield {"type": "token", "content": chunk.content}
+
+            elif kind == "on_tool_start":
+                yield {
+                    "type": "tool_call",
+                    "name": event.get("name", ""),
+                    "args": str(event.get("data", {}).get("input", "")),
                 }
-                for agent in agents
-            ]
-            return self._json_output(summary)
 
-        @tool
-        async def get_agent(agent_id: str) -> str:
-            """Get full state for a specific agent by exact agent_id."""
-            return self._json_output(await self._fleet.get_agent(agent_id))
+            elif kind == "on_tool_end":
+                yield {"type": "tool_result", "name": event.get("name", "")}
 
-        @tool
-        async def list_experiment_templates() -> str:
-            """List available experiment templates with ids, names, versions, and tags.
-            Call configure_experiment(id) next to get the parameter schema before starting."""
-            templates = await self._fleet.list_experiment_templates()
-            summary = [
-                {
-                    "id": template["id"],
-                    "name": template["name"],
-                    "version": template["version"],
-                    "description": template.get("description", ""),
-                    "tags": template.get("tags", []),
-                }
-                for template in templates
-            ]
-            return self._json_output(summary)
+        # Clean up response
+        full_response = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_response).strip()
+        if not full_response:
+            full_response = "No response."
 
-        @tool
-        async def list_experiment_runs(status: str = "") -> str:
-            """List experiment runs. Optionally filter by status such as pending, running, completed, failed, or cancelled."""
-            runs = await self._fleet.list_experiment_runs(status=status or None)
-            summary = [
-                {
-                    "id": run["id"],
-                    "template_id": run["template_id"],
-                    "status": run["status"],
-                    "created_at": run.get("created_at"),
-                    "started_at": run.get("started_at"),
-                    "ended_at": run.get("ended_at"),
-                }
-                for run in runs
-            ]
-            return self._json_output(summary)
+        DB.save_conversation_turns(session_id, message, full_response)
 
-        @tool
-        async def configure_experiment(template_id: str) -> str:
-            """Get the parameter schema for a specific experiment template.
-            Call this after list_experiment_templates and before start_experiment
-            to know which parameters are required vs optional and their types."""
-            template = await self._fleet.get_experiment_template(template_id)
-            return self._json_output({
-                "id": template["id"],
-                "name": template["name"],
-                "parameters_schema": template.get("parameters_schema", {}),
-            })
-
-        @tool
-        async def get_experiment_run(run_id: str) -> str:
-            """Get one experiment run and its recorded steps by exact run_id."""
-            return self._json_output(await self._fleet.get_experiment_run(run_id))
-
-        @tool
-        async def start_experiment(template_id: str, params: dict[str, Any] | None = None) -> str:
-            """Start an experiment run. ALWAYS call configure_experiment(template_id) first
-            to discover required parameters — never call this without knowing what params
-            are needed. Do NOT retry on failure; check configure_experiment output instead."""
-            result = await self._fleet.start_experiment(template_id, params=self._coerce_payload(params))
-            return self._json_output(result)
-
-        @tool
-        async def cancel_experiment_run(run_id: str) -> str:
-            """Cancel a running or pending experiment by exact run_id."""
-            result = await self._fleet.cancel_experiment_run(run_id)
-            return self._json_output(result)
-
-        @tool
-        async def approve_experiment_step(run_id: str) -> str:
-            """Approve a pending approval step in an experiment run.
-            Use when the researcher confirms they are ready to proceed
-            (e.g., pucks have been placed in the arena)."""
-            result = await self._fleet.approve_experiment(run_id)
-            return self._json_output(result)
-
-        # ── Agent logs & commands ────────────────────────────────────
-
-        @tool
-        async def get_agent_logs(agent_id: str, limit: int = 50) -> str:
-            """Get recent logs for an agent. Returns log entries with timestamps, levels, and messages."""
-            return self._json_output(await self._fleet.get_agent_logs(agent_id, limit))
-
-        @tool
-        async def get_agent_commands(agent_id: str, limit: int = 50) -> str:
-            """Get command history for an agent. Shows sent commands and their results."""
-            return self._json_output(await self._fleet.get_agent_commands(agent_id, limit))
-
-        # ── Direct commands ──────────────────────────────────────────
-
-        @tool
-        async def send_agent_command(agent_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command to an agent. ALWAYS call get_command_catalog first to get the exact action name and payload structure."""
-            return self._json_output(
-                await self._fleet.send_agent_command(agent_id, action, self._coerce_payload(payload))
-            )
-
-        @tool
-        async def send_component_command(agent_id: str, component_id: str, action: str, payload: dict | None = None) -> str:
-            """Send a command to a component. ALWAYS call get_command_catalog first to get the exact action name and payload structure."""
-            return self._json_output(
-                await self._fleet.send_component_command(agent_id, component_id, action, self._coerce_payload(payload))
-            )
-
-        @tool
-        async def get_command_catalog(agent_id: str) -> str:
-            """Get the full catalog of available commands for an agent and its components.
-
-            Returns all agent-level commands and per-component commands with their
-            action names, expected payload templates, and categories. Use this to
-            discover what commands you can send before calling send_agent_command
-            or send_component_command."""
-            return self._json_output(await self._fleet.get_command_catalog(agent_id))
-
-        @tool
-        async def delete_agent(agent_id: str) -> str:
-            """Remove an agent from the database. Use with caution."""
-            return self._json_output(await self._fleet.delete_agent(agent_id))
-
-        # ── Topic links ──────────────────────────────────────────────
-
-        @tool
-        async def list_topic_links() -> str:
-            """List all MQTT topic links (rules that forward messages between topics)."""
-            return self._json_output(await self._fleet.list_topic_links())
-
-        @tool
-        async def get_topic_link(link_id: str) -> str:
-            """Get details and EMQX rule metrics for a topic link — throughput, matched/failed
-            message counts, latency. Always call this after list_topic_links when the user
-            asks about link health, throughput, or message counts."""
-            return self._json_output(await self._fleet.get_topic_link(link_id))
-
-        @tool
-        async def create_topic_link(name: str, source_topic: str, target_topic: str, select_clause: str = "*", payload_template: str = "", qos: int = 0) -> str:
-            """Create a new MQTT topic link that forwards messages from source_topic to target_topic."""
-            return self._json_output(
-                await self._fleet.create_topic_link(
-                    name, source_topic, target_topic, select_clause,
-                    payload_template or None, qos,
-                )
-            )
-
-        @tool
-        async def activate_topic_link(link_id: str) -> str:
-            """Activate a topic link so it starts forwarding messages."""
-            return self._json_output(await self._fleet.activate_topic_link(link_id))
-
-        @tool
-        async def deactivate_topic_link(link_id: str) -> str:
-            """Deactivate a topic link to stop it from forwarding messages."""
-            return self._json_output(await self._fleet.deactivate_topic_link(link_id))
-
-        @tool
-        async def delete_topic_link(link_id: str) -> str:
-            """Delete a topic link permanently."""
-            return self._json_output(await self._fleet.delete_topic_link(link_id))
-
-        # ── Sync state ───────────────────────────────────────────────
-
-        @tool
-        async def get_sync_state() -> str:
-            """Get the current sync state of all managed domains (mqtt-users, topic-links, etc)."""
-            return self._json_output(await self._fleet.get_sync_state())
-
-        all_tools = [
-            list_agents,
-            get_agent,
-            get_agent_logs,
-            get_agent_commands,
-            send_agent_command,
-            send_component_command,
-            get_command_catalog,
-            delete_agent,
-            list_experiment_templates,
-            configure_experiment,
-            list_experiment_runs,
-            get_experiment_run,
-            start_experiment,
-            cancel_experiment_run,
-            approve_experiment_step,
-            list_topic_links,
-            get_topic_link,
-            create_topic_link,
-            activate_topic_link,
-            deactivate_topic_link,
-            delete_topic_link,
-            get_sync_state,
-        ]
-
-        # Wrap each tool's coroutine so HTTP/network errors return strings
-        # instead of crashing the ReAct loop
-        for t in all_tools:
-            original = t.coroutine
-
-            @functools.wraps(original)
-            async def safe_coro(*args, _orig=original, **kwargs):
-                try:
-                    return await _orig(*args, **kwargs)
-                except Exception as e:
-                    log.warning("Tool %s failed: %s", _orig.__name__, e)
-                    return f"Error: {e}"
-
-            t.coroutine = safe_coro
-
-        return all_tools
-
-    def _build_specialist_tools(self, specialists: list[dict]) -> list:
-        """Dynamically create one LangChain tool per online specialist component.
-
-        Each tool publishes a ``cmd/task`` MQTT command to the specialist's
-        ``lucid/agents/{agent_id}/components/{component_id}/cmd/task`` topic and
-        awaits the ``evt/task/result`` response via the RRM.
-
-        Default values for ``_aid`` and ``_cid`` in the closure capture the
-        correct agent/component IDs for each specialist; without them the closure
-        would capture the loop variable reference (Python gotcha).
-
-        Args:
-            specialists: List of dicts with ``agent_id``, ``component_id``,
-                         and ``description`` fields from ``DB.get_available_specialists()``.
-
-        Returns:
-            List of LangChain ``@tool``-decorated async functions.
-        """
-        tools = []
-        for s in specialists:
-            agent_id = s["agent_id"]
-            component_id = s["component_id"]
-            description = s.get("description") or f"AI specialist: {component_id}"
-
-            @tool(name=component_id, description=description)
-            async def call_specialist(task: str, _aid=agent_id, _cid=component_id) -> str:
-                """Call a specialist component with a specific task description."""
-                try:
-                    response = await self._fleet.send_command(
-                        agent_id=_aid,
-                        component_id=_cid,
-                        action="task",
-                        payload={"task": task},
-                        timeout_s=30.0,
-                    )
-                    result = response.get("result")
-                    if isinstance(result, dict):
-                        return result.get("result", result.get("error", json.dumps(result)))
-                    if result is None:
-                        return "no response"
-                    return str(result)
-                except asyncio.TimeoutError:
-                    return f"{_cid} timed out — is the specialist running?"
-                except Exception as e:
-                    return f"{_cid} error: {e}"
-
-            tools.append(call_specialist)
-        return tools
-
-    async def _build_fleet_summary(self) -> str:
-        """Build a short summary of all agents and their components for the system prompt."""
-        try:
-            agents = await self._fleet.list_agents()
-        except Exception:
-            return "Fleet unavailable."
-
-        if not agents:
-            return "No agents registered."
-
-        lines = []
-        for agent in agents:
-            aid = agent["agent_id"]
-            status = (agent.get("status") or {}).get("state", "unknown")
-            comp_ids = sorted((agent.get("components") or {}).keys())
-            comp_str = ", ".join(comp_ids) if comp_ids else "none"
-            lines.append(f"- {aid} ({status}) — components: {comp_str}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _coerce_payload(payload: Any) -> dict:
-        """Normalise the payload argument into a dict.
-
-        The LLM may pass a dict (correct), a JSON string, an empty string,
-        None, or some other unexpected type.  This method handles all cases
-        so the downstream MQTT call always receives a dict.
-        """
-        if payload is None:
-            return {}
-        if isinstance(payload, dict):
-            return payload
-        if isinstance(payload, str):
-            cleaned = payload.strip()
-            if not cleaned:
-                return {}
-            try:
-                parsed = json.loads(cleaned)
-                return parsed if isinstance(parsed, dict) else {}
-            except (json.JSONDecodeError, TypeError):
-                return {}
-        return {}
-
-    @staticmethod
-    def _json_output(value: Any) -> str:
-        return json.dumps(value, indent=2, sort_keys=True, default=str)
-
-    @staticmethod
-    def _stringify_tool_args(args: Any) -> str:
-        if isinstance(args, dict):
-            if "task" in args and len(args) == 1:
-                return str(args["task"])
-            return json.dumps(args, sort_keys=True, default=str)
-        return str(args)
+        yield {"type": "done", "response": full_response}

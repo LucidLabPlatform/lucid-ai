@@ -32,6 +32,6 @@ def health():
     return {
         "ok": True,
         "service": "lucid-ai",
-        "model": os.environ.get("OLLAMA_MODEL", ""),
+        "model": os.environ.get("OLLAMA_MODEL", "qwen3:14b"),
         "ollama_base_url": os.environ.get("OLLAMA_BASE_URL", ""),
     }

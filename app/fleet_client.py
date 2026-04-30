@@ -164,6 +164,36 @@ class FleetClient:
     async def delete_topic_link(self, link_id: str) -> dict:
         return await self._request("DELETE", f"/api/topic-links/{link_id}")
 
+    # ── Batch commands ──────────────────────────────────────────────
+
+    async def send_batch_command(
+        self,
+        action: str,
+        targets: list[dict],
+        payload: dict | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        """Send the same command to multiple agents/components in parallel.
+
+        Args:
+            action:    Command action name (e.g. "ping", "set-color").
+            targets:   List of dicts with ``agent_id`` and optional ``component_id``.
+            payload:   Shared payload for all targets.
+            timeout_s: Per-command timeout.
+        """
+        return await self._request(
+            "POST",
+            "/api/commands/batch",
+            json_body={
+                "action": action,
+                "targets": targets,
+                "payload": payload or {},
+                "wait": True,
+                "timeout_s": timeout_s,
+            },
+            timeout_s=timeout_s + 10.0,
+        )
+
     # ── Sync state ───────────────────────────────────────────────────
 
     async def get_sync_state(self) -> dict:
