@@ -16,11 +16,21 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-_DEFAULT_TOPICS_LOCATIONS = (
-    Path("/app/topics.txt"),                                # in-container
-    Path(__file__).resolve().parents[3] / "topics.txt",     # repo: lucid-ai/../topics.txt
-    Path(__file__).resolve().parents[4] / "topics.txt",     # workspace root
-)
+def _candidate_topics_paths() -> list[Path]:
+    """Return candidate topics.txt locations, computed lazily.
+
+    parents[N] raises IndexError when there aren't enough parents (e.g. inside
+    the container where /app/app/ai/schema_block.py only has 3 parents). Build
+    the list defensively so module import never fails.
+    """
+    here = Path(__file__).resolve()
+    candidates: list[Path] = [Path("/app/topics.txt")]  # in-container default
+    for n in (3, 4):
+        try:
+            candidates.append(here.parents[n] / "topics.txt")
+        except IndexError:
+            continue
+    return candidates
 
 
 def _resolve_topics_path() -> Path | None:
@@ -28,7 +38,7 @@ def _resolve_topics_path() -> Path | None:
     if override:
         p = Path(override)
         return p if p.exists() else None
-    for p in _DEFAULT_TOPICS_LOCATIONS:
+    for p in _candidate_topics_paths():
         if p.exists():
             return p
     return None

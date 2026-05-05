@@ -673,6 +673,25 @@ def delete_conversation(session_id: str) -> None:
         conn.commit()
 
 
+def delete_all_conversations() -> int:
+    """Delete every AI conversation. Returns the count of deleted sessions."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM conversation_turns
+                WHERE conversation_id IN (
+                    SELECT id FROM conversations WHERE researcher_id = %s
+                )
+            """, (_AI_RESEARCHER_ID,))
+            cur.execute(
+                "DELETE FROM conversations WHERE researcher_id = %s",
+                (_AI_RESEARCHER_ID,),
+            )
+            count = cur.rowcount
+        conn.commit()
+    return count
+
+
 def save_conversation_turns(
     session_id: str, user_msg: str, assistant_msg: str
 ) -> None:

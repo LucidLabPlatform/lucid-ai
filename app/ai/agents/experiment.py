@@ -51,6 +51,53 @@ def build_tools(fleet: FleetClient) -> list:
         return _json(result)
 
     @tool
+    async def start_default_experiment(template_id: str = "") -> str:
+        """Start an experiment using sensible defaults for every parameter.
+        Use this when the user says "start an experiment" without specifying
+        which template or which parameters. With no template_id, picks the
+        canonical foraging experiment.
+
+        How it works: fetches the template's parameters_schema and submits each
+        parameter's `default` value automatically. The user does not need to
+        provide any arguments.
+        """
+        # Pick the template
+        chosen = (template_id or "").strip()
+        if not chosen:
+            try:
+                templates = await fleet.list_experiment_templates()
+            except Exception as e:
+                return _json({"ok": False, "error": f"Could not list templates: {e}"})
+            ids = [t.get("id", "") for t in templates]
+            preferred = ("foraging-experiment-v2", "foraging-experiment", "foraging-run-v2", "foraging-run")
+            chosen = next((p for p in preferred if p in ids), ids[0] if ids else "")
+            if not chosen:
+                return _json({"ok": False, "error": "No experiment templates available."})
+
+        # Resolve schema → defaults
+        try:
+            template = await fleet.get_experiment_template(chosen)
+        except Exception as e:
+            return _json({"ok": False, "error": f"Template {chosen!r} not found: {e}"})
+
+        schema = template.get("parameters_schema") or {}
+        params: dict[str, Any] = {}
+        for name, spec in schema.items():
+            if not isinstance(spec, dict):
+                continue
+            if "default" in spec and spec["default"] is not None:
+                params[name] = spec["default"]
+        # Start it
+        result = await fleet.start_experiment(chosen, params=params)
+        return _json({
+            "ok": True,
+            "template_id": chosen,
+            "template_name": template.get("name", chosen),
+            "params_used": params,
+            "run": result,
+        })
+
+    @tool
     async def list_experiment_runs(status: str = "") -> str:
         """List experiment runs. Optionally filter by status such as pending,
         running, completed, failed, or cancelled."""
@@ -83,6 +130,7 @@ def build_tools(fleet: FleetClient) -> list:
         list_experiment_templates,
         configure_experiment,
         start_experiment,
+        start_default_experiment,
         list_experiment_runs,
         get_experiment_run,
         approve_experiment_step,

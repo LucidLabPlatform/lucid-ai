@@ -160,17 +160,28 @@ class AIWorkflowAgent:
         full_response = ""
         intent_sent = False
 
+        # Nodes whose chat-model output should NOT leak to the user's
+        # transcript — they are internal LLM calls (e.g. intent classifier,
+        # voice-summary generator) that just return control labels.
+        SUPPRESSED_NODES = {"classify_intent", "format_response"}
+
+        def _origin_node(ev: dict) -> str:
+            md = ev.get("metadata") or {}
+            return md.get("langgraph_node") or ""
+
         async for event in self._graph.astream_events(input_state, version="v2"):
             kind = event.get("event", "")
 
             # Emit intent after classification
             if kind == "on_chain_end" and not intent_sent:
                 output = event.get("data", {}).get("output", {})
-                if isinstance(output, dict) and "intent" in output:
+                if isinstance(output, dict) and "intent" in output and output["intent"]:
                     yield {"type": "intent", "intent": output["intent"]}
                     intent_sent = True
 
             elif kind == "on_chat_model_stream":
+                if _origin_node(event) in SUPPRESSED_NODES:
+                    continue
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and hasattr(chunk, "content") and chunk.content:
                     full_response += chunk.content

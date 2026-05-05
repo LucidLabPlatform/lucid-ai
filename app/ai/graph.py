@@ -23,6 +23,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.ai.agents import command, experiment, fleet, logs, topic_link
 from app.ai.intent import classify_intent
+from app.ai.prompts_store import resolve as resolve_prompt
 from app.ai.prompts import (
     CLASSIFY_PROMPT,
     COMMAND_SYSTEM_PROMPT,
@@ -173,8 +174,9 @@ def build_graph(llm: ChatOllama, fleet_client: FleetClient) -> StateGraph:
                 user_msg = msg.content
                 break
 
+        classify_prompt = resolve_prompt("CLASSIFY_PROMPT", CLASSIFY_PROMPT)
         intent, confidence, method = await classify_intent(
-            user_msg, llm=llm, classify_prompt=CLASSIFY_PROMPT,
+            user_msg, llm=llm, classify_prompt=classify_prompt,
         )
 
         # Under a narrowed profile, route intents we don't have a specialist for
@@ -199,9 +201,12 @@ def build_graph(llm: ChatOllama, fleet_client: FleetClient) -> StateGraph:
     async def _run_specialist(state: AgentState, name: str) -> dict:
         """Run a pre-compiled specialist agent with focused prompt + fleet context."""
         config = active_specialists[name]
-        system_prompt = config["prompt"].format_map(_SafeFormatDict(
+        prompt_key = f"{name.upper()}_SYSTEM_PROMPT"
+        template = resolve_prompt(prompt_key, config["prompt"])
+        system_prompt = template.format_map(_SafeFormatDict(
             fleet_context=state["fleet_context"],
             schema_block=schema_block,
+            lab_context=resolve_prompt("LAB_CONTEXT", ""),
         ))
 
         # Build message list: system prompt + conversation history
@@ -257,9 +262,11 @@ def build_graph(llm: ChatOllama, fleet_client: FleetClient) -> StateGraph:
 
     async def conversation_agent_node(state: AgentState) -> dict:
         """Direct LLM call for conversational responses (no tools)."""
-        system_prompt = CONVERSATION_SYSTEM_PROMPT.format_map(_SafeFormatDict(
+        template = resolve_prompt("CONVERSATION_SYSTEM_PROMPT", CONVERSATION_SYSTEM_PROMPT)
+        system_prompt = template.format_map(_SafeFormatDict(
             fleet_context=state["fleet_context"],
             schema_block=schema_block,
+            lab_context=resolve_prompt("LAB_CONTEXT", ""),
         ))
         messages = [SystemMessage(content=system_prompt)]
         for msg in state["messages"]:
